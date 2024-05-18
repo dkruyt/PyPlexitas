@@ -10,8 +10,7 @@ from typing import List, Dict, Optional
 
 import aiohttp
 from lxml import html
-from langchain import OpenAI
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, OpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import ConversationChain
 from langchain.chains.question_answering import load_qa_chain
@@ -26,7 +25,7 @@ CHUNK_SIZE = 1000
 DIMENSION = 1536
 
 # Logging configuration
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)  # Set logging to DEBUG level
 logger = logging.getLogger(__name__)
 
 # Request class
@@ -136,6 +135,8 @@ async def fetch_url_content(session: ClientSession, url: str, max_retries: int =
                     elements = document.cssselect(selector_p)
                     main_text = "\n".join([clean_text(element.text_content()) for element in elements if element.text_content()])
                     logger.debug(f"Extracted content: {main_text}")
+                    if not main_text.strip():
+                        logger.warning(f"No content extracted from URL: {url}")
                     return main_text
                 else:
                     logger.warning(f"Request failed with status code: {response.status}")
@@ -178,6 +179,8 @@ async def generate_upsert_embeddings(request: Request, vector_client: QdrantClie
 
     for url_hash, search_result in request.search_map.items():
         content = search_result.content or ""
+        # Print content length to debug why chunks might be zero
+        logger.debug(f"Content length for URL hash {url_hash}: {len(content)}")
         chunks = [" ".join(content.split()[i:i+CHUNK_SIZE]) for i in range(0, len(content.split()), CHUNK_SIZE)]
         logger.info(f"Chunked content into {len(chunks)} chunks for url: {search_result.url}")
         logger.info(f"Generating embedding for url: {search_result.url}")
@@ -216,9 +219,11 @@ class LLMAgent:
             documents.append(chunk_yaml)
         return documents
 
-    async def answer_question_stream(self, query: str, chunks: List[Chunk]):
+    async def answer_question_stream(self, query: str, chunks: List[Chunk], debug: bool = False):
         logger.info(f"\nAnswering your query: {query} 🙋\n")
         documents = self.chunk_to_documents(chunks)
+        if debug:
+            logger.debug(f"Documents content:\n{json.dumps(documents, indent=2)}")
         prompt = PromptTemplate(
             input_variables=["context", "question"],
             template="""
@@ -237,18 +242,19 @@ class LLMAgent:
             """,
         )
         chain = load_qa_chain(self.llm, chain_type="stuff", prompt=prompt)
-        
-        result = chain({"input_documents": documents, "question": query}, return_only_outputs=True)
+        result = chain.invoke({"input_documents": documents, "question": query}, return_only_outputs=True)        
         print(result["output_text"])
 
 async def main():
-    parser = argparse.ArgumentParser(description="fyin.app - Open source CLI alternative to Perplexity AI.")
+    parser = argparse.ArgumentParser(description="PyPlexitas - Open source CLI alternative to Perplexity AI.")
     parser.add_argument("-q", "--query", type=str, required=True, help="Search Query")
     parser.add_argument("-s", "--search", type=int, default=10, help="Number of search results to parse")
+    parser.add_argument("-d", "--debug", action="store_true", help="Print the content of documents for debugging")
     args = parser.parse_args()
 
     query = args.query
     search_count = args.search
+    debug = args.debug
 
     logger.info(f"Searching for: {query}")
     request = Request(query)
@@ -266,10 +272,16 @@ async def main():
     logger.info("Embedding content...")
     dimension = len(llm_agent.embeddings.embed_query(query))
     vector_client = QdrantClient(host="localhost", port=6333)
-    vector_client.recreate_collection(
-        collection_name="embeddings",
+
+    collection_name = "embeddings"
+    if vector_client.collection_exists(collection_name):
+        vector_client.delete_collection(collection_name)
+
+    vector_client.create_collection(
+        collection_name=collection_name,
         vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
     )
+
     await generate_upsert_embeddings(request, vector_client)
 
     # Search across embeddings
@@ -283,7 +295,7 @@ async def main():
     chunks = request.get_chunks(chunk_ids)
 
     # Answer the question
-    await llm_agent.answer_question_stream(query, chunks)
+    await llm_agent.answer_question_stream(query, chunks, debug)
 
 if __name__ == "__main__":
     asyncio.run(main())
