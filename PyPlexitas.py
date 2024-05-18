@@ -10,11 +10,12 @@ from typing import List, Dict, Optional
 
 import aiohttp
 from lxml import html
-from langchain_openai import OpenAIEmbeddings, OpenAI
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import ConversationChain
 from langchain.chains.question_answering import load_qa_chain
 from langchain.memory import ConversationBufferMemory
+from langchain.docstore.document import Document
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
@@ -25,7 +26,7 @@ CHUNK_SIZE = 1000
 DIMENSION = 1536
 
 # Logging configuration
-logging.basicConfig(level=logging.DEBUG)  # Set logging to DEBUG level
+logging.basicConfig(level=logging.INFO)  # Set logging to DEBUG level
 logger = logging.getLogger(__name__)
 
 # Request class
@@ -40,22 +41,23 @@ class Request:
         url_hash = hash_string(search_result.url)
         self.search_map[url_hash] = search_result
 
-    def add_webpage_content(self, url: str, content: str):
-        url_hash = hash_string(url)
+    def add_webpage_content(self, url_hash: str, content: str):
         if url_hash in self.search_map:
             self.search_map[url_hash].content = content
+            logger.debug(f"Added content for URL hash {url_hash}")
 
     def add_id_to_chunk(self, chunk: str, search_result_id: str, chunk_id: int):
         self.chunk_id_chunk_map[chunk_id] = chunk
         self.chunk_id_to_search_id[chunk_id] = search_result_id
+        logger.debug(f"Chunk added for search result ID {search_result_id} with chunk ID {chunk_id}")
 
     def get_chunks(self, ids: List[int]) -> List["Chunk"]:
         chunks = []
         for chunk_id in ids:
-            chunk_content = self.chunk_id_chunk_map[chunk_id]
-            search_id = self.chunk_id_to_search_id[chunk_id]
-            search_result = self.search_map[search_id]
-            if search_result:
+            chunk_content = self.chunk_id_chunk_map.get(chunk_id)
+            search_id = self.chunk_id_to_search_id.get(chunk_id)
+            search_result = self.search_map.get(search_id)
+            if search_result and chunk_content:
                 chunk = Chunk(
                     content=chunk_content,
                     name=search_result.name,
@@ -131,10 +133,23 @@ async def fetch_url_content(session: ClientSession, url: str, max_retries: int =
                 if response.status == 200:
                     full_text = await response.text()
                     document = html.fromstring(full_text)
-                    selector_p = "body p, body h1, body h2, body h3, article p, div p, span p"
-                    elements = document.cssselect(selector_p)
-                    main_text = "\n".join([clean_text(element.text_content()) for element in elements if element.text_content()])
-                    logger.debug(f"Extracted content: {main_text}")
+
+                    # Customizing the extraction to target only relevant content
+                    selectors = [
+                        "article",  # good for blog posts/articles
+                        "div.main-content",  # a more specific div that usually holds main content
+                        "body"  # generic selector
+                    ]
+
+                    # Try multiple selectors to find content
+                    main_text = ""
+                    for selector in selectors:
+                        elements = document.cssselect(selector)
+                        if elements:
+                            main_text = "\n".join([clean_text(element.text_content()) for element in elements if element.text_content()])
+                            break
+
+                    logger.debug(f"Extracted content: '{main_text}' from URL: {url}")
                     if not main_text.strip():
                         logger.warning(f"No content extracted from URL: {url}")
                     return main_text
@@ -157,9 +172,11 @@ async def process_urls(request: Request):
             tasks.append(task)
 
         webpage_contents = await asyncio.gather(*tasks)
-
-        for url, content in zip(request.search_map.keys(), webpage_contents):
-            request.add_webpage_content(url, content)
+        
+        for search_result, content in zip(request.search_map.values(), webpage_contents):
+            url_hash = hash_string(search_result.url)
+            logger.debug(f"Adding webpage content for URL hash {url_hash}. Content length: {len(content)}")
+            request.add_webpage_content(url_hash, content)
 
 # Embedding generation and upsert
 async def insert_embedding(vector_client: QdrantClient, embedding: List[float], chunk_id: int):
@@ -179,9 +196,22 @@ async def generate_upsert_embeddings(request: Request, vector_client: QdrantClie
 
     for url_hash, search_result in request.search_map.items():
         content = search_result.content or ""
-        # Print content length to debug why chunks might be zero
         logger.debug(f"Content length for URL hash {url_hash}: {len(content)}")
-        chunks = [" ".join(content.split()[i:i+CHUNK_SIZE]) for i in range(0, len(content.split()), CHUNK_SIZE)]
+
+        if not content.strip():
+            logger.warning(f"Skipping URL {search_result.url} due to empty or non-relevant content")
+            continue
+
+        # Split content into chunks
+        chunks = []
+        words = content.split()
+        for i in range(0, len(words), CHUNK_SIZE):
+            chunk = " ".join(words[i:i+CHUNK_SIZE])
+            chunks.append(chunk)
+
+        if not chunks:
+            chunks = [content]
+
         logger.info(f"Chunked content into {len(chunks)} chunks for url: {search_result.url}")
         logger.info(f"Generating embedding for url: {search_result.url}")
 
@@ -199,6 +229,7 @@ async def process_chunk(request: Request, vector_client: QdrantClient, shared_co
     chunk_id = shared_counter
 
     request.add_id_to_chunk(chunk, url_hash, chunk_id)
+    logger.debug(f"Processed and added chunk with ID {chunk_id} for url hash {url_hash}")
 
     await insert_embedding(vector_client, embedding, chunk_id)
 
@@ -210,20 +241,25 @@ class LLMAgent:
 
         self.local_mode = "localhost" in base_url
         self.embeddings = OpenAIEmbeddings()
-        self.llm = OpenAI(openai_api_key=api_key)
+        self.llm = ChatOpenAI(openai_api_key=api_key, model_name="gpt-4o")
 
-    def chunk_to_documents(self, chunks: List[Chunk]) -> List[str]:
+    def chunk_to_documents(self, chunks: List[Chunk]) -> List[Document]:
         documents = []
         for chunk_id, chunk in enumerate(chunks, start=1):
-            chunk_yaml = f"Name: {chunk.name}\nurl: {chunk.url}\nfact: {chunk.content}\nid: {chunk_id}\n\n"
-            documents.append(chunk_yaml)
+            metadata = {
+                "name": chunk.name,
+                "url": chunk.url,
+                "id": str(chunk_id)
+            }
+            document = Document(page_content=chunk.content, metadata=metadata)
+            documents.append(document)
         return documents
 
     async def answer_question_stream(self, query: str, chunks: List[Chunk], debug: bool = False):
         logger.info(f"\nAnswering your query: {query} 🙋\n")
         documents = self.chunk_to_documents(chunks)
         if debug:
-            logger.debug(f"Documents content:\n{json.dumps(documents, indent=2)}")
+            logger.debug(f"Documents metadata:\n{[doc.metadata for doc in documents]}")
         prompt = PromptTemplate(
             input_variables=["context", "question"],
             template="""
@@ -242,7 +278,7 @@ class LLMAgent:
             """,
         )
         chain = load_qa_chain(self.llm, chain_type="stuff", prompt=prompt)
-        result = chain.invoke({"input_documents": documents, "question": query}, return_only_outputs=True)        
+        result = chain.invoke({"input_documents": documents, "question": query}, return_only_outputs=True)
         print(result["output_text"])
 
 async def main():
