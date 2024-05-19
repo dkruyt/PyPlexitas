@@ -28,6 +28,8 @@ load_dotenv()
 # Constants
 # Default endpoint for Bing Search API
 DEFAULT_BING_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
+# Default endpoint for Google Custom Search API
+DEFAULT_GOOGLE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
 # Default base URL for OpenAI API
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # Default chunk size for processing text data
@@ -36,7 +38,7 @@ CHUNK_SIZE = 1000
 DIMENSION = 1536
 # Default maximum number of tokens for input/output in API requests
 DEFAULT_MAX_TOKENS = 1024  
-# Defined user-agent globally, to be used in all API requests
+# Defined user-agent globally, to be used in all API requests can be helpfull in bypassing logins and pywalls
 USER_AGENT = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/W.X.Y.Z Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 
 # Initialize logger
@@ -102,8 +104,8 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 # Function to perform web search using Bing's search API.
-async def fetch_web_pages(request: Request, search_count: int):
-    logger.info("Starting Bing search...")
+async def fetch_web_pages_bing(request: Request, search_count: int):
+    print("Starting Bing search...")
     
     query = request.query
     mkt = "en-US"
@@ -133,6 +135,7 @@ async def fetch_web_pages(request: Request, search_count: int):
             if response.status == 200:
                 json_data = await response.json()
                 logger.info(f"Bing search returned: {len(json_data['webPages']['value'])} results")
+                print(f"Bing search returned: {len(json_data['webPages']['value'])} results")
 
                 for wp in json_data["webPages"]["value"]:
                     search_result = SearchResult(
@@ -142,6 +145,45 @@ async def fetch_web_pages(request: Request, search_count: int):
                     request.add_search_result(search_result)
 
                 logger.debug(f"JSON result from Bing: {json.dumps(json_data, indent=2)}")
+            else:
+                logger.error(f"Request failed with status code: {response.status}")
+                raise Exception(f"Request failed with status code: {response.status}")
+
+# Function to perform web search using Google's search API.
+async def fetch_web_pages_google(request: Request, search_count: int):
+    print("Starting Google search...")
+    
+    query = request.query
+
+    google_endpoint = os.getenv("GOOGLE_ENDPOINT", DEFAULT_GOOGLE_ENDPOINT)
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    google_cx = os.getenv("GOOGLE_CX")
+    if not google_api_key or not google_cx:
+        logger.error("Google API key or CX is missing. Please set GOOGLE_API_KEY and GOOGLE_CX in your environment variables.")
+        return
+
+    params = {
+        "key": google_api_key,
+        "cx": google_cx,
+        "q": query,
+        "num": search_count
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(google_endpoint, params=params) as response:
+            if response.status == 200:
+                json_data = await response.json()
+                logger.info(f"Google search returned: {len(json_data['items'])} results")
+                print(f"Google search returned: {len(json_data['items'])} results")
+
+                for item in json_data["items"]:
+                    search_result = SearchResult(
+                        name=item["title"],
+                        url=item["link"],
+                    )
+                    request.add_search_result(search_result)
+
+                logger.debug(f"JSON result from Google: {json.dumps(json_data, indent=2)}")
             else:
                 logger.error(f"Request failed with status code: {response.status}")
                 raise Exception(f"Request failed with status code: {response.status}")
@@ -301,7 +343,7 @@ class LLMAgent:
         return documents
 
     async def answer_question_stream(self, query: str, chunks: List[Chunk], max_tokens: int):
-        logger.info(f"\nAnswering your query: {query} 🙋\n")
+        print(f"\nAnswering your query: {query} 🙋\n")
         documents = self.chunk_to_documents(chunks, max_tokens)
         logger.debug(f"Documents metadata:\n{[doc.metadata for doc in documents]}")
         prompt = PromptTemplate(
@@ -330,6 +372,7 @@ async def main():
     parser = argparse.ArgumentParser(description="PyPlexitas - Open source CLI alternative to Perplexity AI.")
     parser.add_argument("-q", "--query", type=str, required=True, help="Search Query")
     parser.add_argument("-s", "--search", type=int, default=10, help="Number of search results to parse")
+    parser.add_argument("--engine", type=str, choices=['bing', 'google'], default='bing', help="Search engine to use (bing or google)")
     parser.add_argument("-l", "--log-level", type=str, default="ERROR", help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
     parser.add_argument("-t", "--max-tokens", type=int, default=DEFAULT_MAX_TOKENS, help="Maximum token limit for model input")
     args = parser.parse_args()
@@ -343,14 +386,18 @@ async def main():
     query = args.query
     search_count = args.search
     max_tokens = args.max_tokens
+    search_engine = args.engine
 
-    logger.info(f"Searching for: {query}")
+    logger.info(f"Searching for: {query} using {search_engine}")
     request = Request(query)
     llm_agent = LLMAgent()
 
     # Fetch search results
-    logger.info("Fetching search results from Bing...")
-    await fetch_web_pages(request, search_count)
+    logger.info("Fetching search results...")
+    if search_engine == 'bing':
+        await fetch_web_pages_bing(request, search_count)
+    else:
+        await fetch_web_pages_google(request, search_count)
 
     # Scrape content
     logger.info("Scraping content from search results...")
