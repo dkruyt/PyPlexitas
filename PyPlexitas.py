@@ -26,11 +26,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Constants
+# Default endpoint for Bing Search API
 DEFAULT_BING_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
+# Default base URL for OpenAI API
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+# Default chunk size for processing text data
 CHUNK_SIZE = 1000
+# Dimension of the embedding vectors
 DIMENSION = 1536
-DEFAULT_MAX_TOKENS = 1024  # Default value for maximum tokens
+# Default maximum number of tokens for input/output in API requests
+DEFAULT_MAX_TOKENS = 1024  
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -86,14 +91,14 @@ class Chunk:
         self.name = name
         self.url = url
 
-# Utility functions
+# Function to hash strings, typically used for URL hashing or similar purposes.
 def hash_string(input_string: str) -> str:
-    return hashlib.sha256(input_string.encode()).hexdigest()
 
+# Function to clean text by removing extra whitespace and normalizing spaces.
 def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
-# Bing search
+# Function to perform web search using Bing's search API.
 async def fetch_web_pages(request: Request, search_count: int):
     logger.info("Starting Bing search...")
     
@@ -137,7 +142,7 @@ async def fetch_web_pages(request: Request, search_count: int):
                 logger.error(f"Request failed with status code: {response.status}")
                 raise Exception(f"Request failed with status code: {response.status}")
 
-# Content scraping
+# Function to scrape content from given URLs by making HTTP requests.
 async def fetch_url_content(session: ClientSession, url: str, max_retries: int = 3, retry_delay: int = 1) -> str:
     logger.info(f"Scraping content from URL: {url}")
     retries = 0
@@ -175,6 +180,7 @@ async def fetch_url_content(session: ClientSession, url: str, max_retries: int =
     logger.error(f"Failed to scrape content from URL: {url} after {max_retries} retries.")
     return ""
 
+# Function to handle the URL processing by scraping content from each URL found in the search results.
 async def process_urls(request: Request):
     logger.info("Processing URLs to scrape content...")
     async with aiohttp.ClientSession() as session:
@@ -203,7 +209,9 @@ async def insert_embedding(vector_client: QdrantClient, embedding: List[float], 
             )
         ],
     )
-
+    
+# Function to generate embeddings for web page content and upsert them into the vector database.
+# This function iterates over the search results, chunks the content, and processes each chunk to create and store embeddings.
 async def generate_upsert_embeddings(request: Request, vector_client: QdrantClient):
     logger.info("Generating and upserting embeddings...")
     tasks = []
@@ -237,6 +245,7 @@ async def generate_upsert_embeddings(request: Request, vector_client: QdrantClie
 
     await asyncio.gather(*tasks)
 
+# Function to process a content chunk, generate its embedding, and upsert the embedding into the vector database.
 async def process_chunk(request: Request, vector_client: QdrantClient, shared_counter: int, url_hash: str, chunk: str):
     logger.debug(f"Processing chunk with ID {shared_counter} for URL hash {url_hash}")
     if os.getenv("USE_OLLAMA", "false").lower() == "true":
