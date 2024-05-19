@@ -93,6 +93,7 @@ class Chunk:
 
 # Function to hash strings, typically used for URL hashing or similar purposes.
 def hash_string(input_string: str) -> str:
+    return hashlib.sha256(input_string.encode()).hexdigest()
 
 # Function to clean text by removing extra whitespace and normalizing spaces.
 def clean_text(text: str) -> str:
