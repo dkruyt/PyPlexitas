@@ -10,6 +10,8 @@ from typing import List, Dict, Optional
 
 import aiohttp
 from lxml import html
+from langchain_community.llms import Ollama
+from langchain_community.embeddings import OllamaEmbeddings
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import ConversationChain
@@ -18,6 +20,10 @@ from langchain.memory import ConversationBufferMemory
 from langchain.docstore.document import Document
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+from dotenv import load_dotenv  
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Constants
 DEFAULT_BING_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
@@ -100,8 +106,11 @@ async def fetch_web_pages(request: Request, search_count: int):
     }
 
     bing_endpoint = os.getenv("BING_ENDPOINT", DEFAULT_BING_ENDPOINT)
-    bing_api_key = os.environ["BING_SUBSCRIPTION_KEY"]
-
+    bing_api_key = os.getenv("BING_SUBSCRIPTION_KEY")
+    if not bing_api_key:
+        logger.error("Bing API key is missing. Please set BING_SUBSCRIPTION_KEY in your environment variables.")
+        return
+    
     headers = {
         "Ocp-Apim-Subscription-Key": bing_api_key,
     }
@@ -223,7 +232,10 @@ async def generate_upsert_embeddings(request: Request, vector_client: QdrantClie
     await asyncio.gather(*tasks)
 
 async def process_chunk(request: Request, vector_client: QdrantClient, shared_counter: int, url_hash: str, chunk: str):
-    embeddings = OpenAIEmbeddings()
+    if os.getenv("USE_OLLAMA", "false").lower() == "true":
+        embeddings = OllamaEmbeddings()
+    else:
+        embeddings = OpenAIEmbeddings()
     embedding = embeddings.embed_query(chunk)
 
     chunk_id = shared_counter
@@ -237,11 +249,20 @@ async def process_chunk(request: Request, vector_client: QdrantClient, shared_co
 class LLMAgent:
     def __init__(self):
         base_url = os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL)
-        api_key = os.environ["OPENAI_API_KEY"]
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        use_ollama = os.getenv("USE_OLLAMA", "false").lower() == "true"
 
-        self.local_mode = "localhost" in base_url
-        self.embeddings = OpenAIEmbeddings()
-        self.llm = ChatOpenAI(openai_api_key=api_key, model_name="gpt-4o")
+        embedding_model_name = os.getenv("EMBEDDING_MODEL_NAME", "llama3")
+        chat_model_name = os.getenv("CHAT_MODEL_NAME", "gpt-4o")
+        ollama_chat_model_name = os.getenv("OLLAMA_CHAT_MODEL_NAME", "llama3")
+
+        self.local_mode = use_ollama
+        if self.local_mode:
+            self.embeddings = OllamaEmbeddings(model='llama3')
+            self.llm = Ollama(model=ollama_chat_model_name)
+        else:
+            self.embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+            self.llm = ChatOpenAI(openai_api_key=api_key, model_name=chat_model_name)
 
     def chunk_to_documents(self, chunks: List[Chunk]) -> List[Document]:
         documents = []
