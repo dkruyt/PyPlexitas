@@ -1,8 +1,8 @@
-# PyPlexitas
+# 🌟 PyPlexitas
 
 PyPlexitas is an open-source Python CLI alternative to Perplexity AI, designed to perform web searches, scrape content, generate embeddings, and answer questions using state-of-the-art language models.
 
-Example:
+**Example:**
 ```bash
 python PyPlexitas.py -q "When will the next model GPT-5 be released" -s 10 --engine google 
 ```
@@ -120,3 +120,5 @@ Contributions are welcome! Please fork the repository and submit a pull request 
 
 ## License
 This project is licensed under the GPL 3.0 License. See the [LICENSE](LICENSE) file for details.
+
+
