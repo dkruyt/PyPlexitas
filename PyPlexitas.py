@@ -190,12 +190,12 @@ async def fetch_web_pages_google(request: Request, search_count: int, verbose: b
                 raise Exception(f"Request failed with status code: {response.status}")
 
 # Function to scrape content from given URLs by making HTTP requests.
-async def fetch_url_content(session: ClientSession, url: str, max_retries: int = 3, retry_delay: int = 1) -> str:
+async def fetch_url_content(session: ClientSession, url: str, max_retries: int = 3, retry_delay: int = 1, timeout: int = 5) -> str:
     logger.info(f"Scraping content from URL: {url}")
     retries = 0
     while retries < max_retries:
         try:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=timeout) as response:
                 if response.status == 200:
                     full_text = await response.text()
                     document = html.fromstring(full_text)
@@ -220,7 +220,7 @@ async def fetch_url_content(session: ClientSession, url: str, max_retries: int =
                 else:
                     logger.warning(f"Request failed with status code: {response.status}")
                     return ""
-        except (ClientError, ClientSSLError) as e:
+        except (ClientError, ClientSSLError, asyncio.TimeoutError) as e:
             logger.warning(f"Error occurred while scraping URL: {url}. Error: {str(e)}")
             retries += 1
             await asyncio.sleep(retry_delay)
@@ -371,7 +371,7 @@ class LLMAgent:
         print(result["output_text"])
 
 async def main():
-    parser = argparse.ArgumentParser(description="PyPlexitas - Open source CLI alternative to Perplexity AI.")
+    parser = argparse.ArgumentParser(description="PyPlexitas - Open source CLI alternative to Perplexity AI by Dennis Kruyt")
     parser.add_argument("-q", "--query", type=str, required=True, help="Search Query")
     parser.add_argument("-s", "--search", type=int, default=10, help="Number of search results to parse")
     parser.add_argument("--engine", type=str, choices=['bing', 'google'], default='bing', help="Search engine to use (bing or google)")
