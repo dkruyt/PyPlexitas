@@ -30,9 +30,9 @@ DEFAULT_BING_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 CHUNK_SIZE = 1000
 DIMENSION = 1536
+DEFAULT_MAX_TOKENS = 1024  # Default value for maximum tokens
 
-# Logging configuration
-logging.basicConfig(level=logging.INFO)  # Set logging to DEBUG level
+# Initialize logger
 logger = logging.getLogger(__name__)
 
 # Request class
@@ -48,8 +48,8 @@ class Request:
         self.search_map[url_hash] = search_result
 
     def add_webpage_content(self, url_hash: str, content: str):
-        if url_hash in self.search_map:
-            self.search_map[url_hash].content = content
+        if (search := self.search_map.get(url_hash, None)) is not None:
+            search.content = content
             logger.debug(f"Added content for URL hash {url_hash}")
 
     def add_id_to_chunk(self, chunk: str, search_result_id: str, chunk_id: int):
@@ -95,9 +95,13 @@ def clean_text(text: str) -> str:
 
 # Bing search
 async def fetch_web_pages(request: Request, search_count: int):
+    logger.info("Starting Bing search...")
+    
     query = request.query
     mkt = "en-US"
     count_str = str(search_count)
+
+    logger.debug(f"Search parameters - Query: {query}, Market: {mkt}, Count: {count_str}")
 
     params = {
         "mkt": mkt,
@@ -110,7 +114,7 @@ async def fetch_web_pages(request: Request, search_count: int):
     if not bing_api_key:
         logger.error("Bing API key is missing. Please set BING_SUBSCRIPTION_KEY in your environment variables.")
         return
-    
+
     headers = {
         "Ocp-Apim-Subscription-Key": bing_api_key,
     }
@@ -130,6 +134,7 @@ async def fetch_web_pages(request: Request, search_count: int):
 
                 logger.debug(f"JSON result from Bing: {json.dumps(json_data, indent=2)}")
             else:
+                logger.error(f"Request failed with status code: {response.status}")
                 raise Exception(f"Request failed with status code: {response.status}")
 
 # Content scraping
@@ -143,14 +148,12 @@ async def fetch_url_content(session: ClientSession, url: str, max_retries: int =
                     full_text = await response.text()
                     document = html.fromstring(full_text)
 
-                    # Customizing the extraction to target only relevant content
                     selectors = [
                         "article",  # good for blog posts/articles
                         "div.main-content",  # a more specific div that usually holds main content
-                        "body"  # generic selector
+                        "body",  # generic selector
                     ]
 
-                    # Try multiple selectors to find content
                     main_text = ""
                     for selector in selectors:
                         elements = document.cssselect(selector)
@@ -173,6 +176,7 @@ async def fetch_url_content(session: ClientSession, url: str, max_retries: int =
     return ""
 
 async def process_urls(request: Request):
+    logger.info("Processing URLs to scrape content...")
     async with aiohttp.ClientSession() as session:
         tasks = []
         for search_result in request.search_map.values():
@@ -189,6 +193,7 @@ async def process_urls(request: Request):
 
 # Embedding generation and upsert
 async def insert_embedding(vector_client: QdrantClient, embedding: List[float], chunk_id: int):
+    logger.debug(f"Inserting embedding for chunk ID {chunk_id}")
     vector_client.upsert(
         collection_name="embeddings",
         points=[
@@ -200,6 +205,7 @@ async def insert_embedding(vector_client: QdrantClient, embedding: List[float], 
     )
 
 async def generate_upsert_embeddings(request: Request, vector_client: QdrantClient):
+    logger.info("Generating and upserting embeddings...")
     tasks = []
     shared_counter = 0
 
@@ -232,6 +238,7 @@ async def generate_upsert_embeddings(request: Request, vector_client: QdrantClie
     await asyncio.gather(*tasks)
 
 async def process_chunk(request: Request, vector_client: QdrantClient, shared_counter: int, url_hash: str, chunk: str):
+    logger.debug(f"Processing chunk with ID {shared_counter} for URL hash {url_hash}")
     if os.getenv("USE_OLLAMA", "false").lower() == "true":
         embeddings = OllamaEmbeddings()
     else:
@@ -241,7 +248,7 @@ async def process_chunk(request: Request, vector_client: QdrantClient, shared_co
     chunk_id = shared_counter
 
     request.add_id_to_chunk(chunk, url_hash, chunk_id)
-    logger.debug(f"Processed and added chunk with ID {chunk_id} for url hash {url_hash}")
+    logger.debug(f"Processed and added chunk with ID {chunk_id} for URL hash {url_hash}")
 
     await insert_embedding(vector_client, embedding, chunk_id)
 
@@ -263,24 +270,27 @@ class LLMAgent:
         else:
             self.embeddings = OpenAIEmbeddings(openai_api_key=api_key)
             self.llm = ChatOpenAI(openai_api_key=api_key, model_name=chat_model_name)
+        
+        logger.info(f"LLM Agent initialized. Local mode: {self.local_mode}")
 
-    def chunk_to_documents(self, chunks: List[Chunk]) -> List[Document]:
+    def chunk_to_documents(self, chunks: List[Chunk], max_tokens: int) -> List[Document]:
         documents = []
-        for chunk_id, chunk in enumerate(chunks, start=1):
-            metadata = {
-                "name": chunk.name,
-                "url": chunk.url,
-                "id": str(chunk_id)
-            }
-            document = Document(page_content=chunk.content, metadata=metadata)
-            documents.append(document)
+        current_tokens = 0
+
+        for chunk in chunks:
+            chunk_tokens = len(chunk.content.split())  # Simple token estimation using word count
+            if current_tokens + chunk_tokens > max_tokens:
+                break
+            documents.append(Document(page_content=chunk.content, metadata={"name": chunk.name, "url": chunk.url}))
+            current_tokens += chunk_tokens
+        
+        logger.debug(f"Converted {len(chunks)} chunks into {len(documents)} documents")
         return documents
 
-    async def answer_question_stream(self, query: str, chunks: List[Chunk], debug: bool = False):
+    async def answer_question_stream(self, query: str, chunks: List[Chunk], max_tokens: int):
         logger.info(f"\nAnswering your query: {query} 🙋\n")
-        documents = self.chunk_to_documents(chunks)
-        if debug:
-            logger.debug(f"Documents metadata:\n{[doc.metadata for doc in documents]}")
+        documents = self.chunk_to_documents(chunks, max_tokens)
+        logger.debug(f"Documents metadata:\n{[doc.metadata for doc in documents]}")
         prompt = PromptTemplate(
             input_variables=["context", "question"],
             template="""
@@ -300,18 +310,26 @@ class LLMAgent:
         )
         chain = load_qa_chain(self.llm, chain_type="stuff", prompt=prompt)
         result = chain.invoke({"input_documents": documents, "question": query}, return_only_outputs=True)
+        logger.debug(f"Generated answer: {result['output_text']}")
         print(result["output_text"])
 
 async def main():
     parser = argparse.ArgumentParser(description="PyPlexitas - Open source CLI alternative to Perplexity AI.")
     parser.add_argument("-q", "--query", type=str, required=True, help="Search Query")
     parser.add_argument("-s", "--search", type=int, default=10, help="Number of search results to parse")
-    parser.add_argument("-d", "--debug", action="store_true", help="Print the content of documents for debugging")
+    parser.add_argument("-l", "--log-level", type=str, default="ERROR", help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
+    parser.add_argument("-t", "--max-tokens", type=int, default=DEFAULT_MAX_TOKENS, help="Maximum token limit for model input")
     args = parser.parse_args()
+
+    logger.setLevel(args.log_level.upper())
+    logging.basicConfig(level=args.log_level.upper())
+    
+    logger.info("Application started")
+    logger.debug(f"Received arguments: {args}")
 
     query = args.query
     search_count = args.search
-    debug = args.debug
+    max_tokens = args.max_tokens
 
     logger.info(f"Searching for: {query}")
     request = Request(query)
@@ -352,7 +370,7 @@ async def main():
     chunks = request.get_chunks(chunk_ids)
 
     # Answer the question
-    await llm_agent.answer_question_stream(query, chunks, debug)
+    await llm_agent.answer_question_stream(query, chunks, max_tokens)
 
 if __name__ == "__main__":
     asyncio.run(main())
