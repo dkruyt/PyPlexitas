@@ -105,8 +105,8 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 # Function to perform web search using Bing's search API.
-async def fetch_web_pages_bing(request: Request, search_count: int):
-    print("Starting Bing search ⏳")
+async def fetch_web_pages_bing(request: Request, search_count: int, verbose: bool):
+    if verbose: print("Starting Bing search ⏳")
     
     query = request.query
     mkt = "en-US"
@@ -151,8 +151,8 @@ async def fetch_web_pages_bing(request: Request, search_count: int):
                 raise Exception(f"Request failed with status code: {response.status}")
 
 # Function to perform web search using Google's search API.
-async def fetch_web_pages_google(request: Request, search_count: int):
-    print("Starting Google search ⏳")
+async def fetch_web_pages_google(request: Request, search_count: int, verbose: bool):
+    if verbose: print("Starting Google search ⏳")
     
     query = request.query
 
@@ -175,7 +175,7 @@ async def fetch_web_pages_google(request: Request, search_count: int):
             if response.status == 200:
                 json_data = await response.json()
                 logger.info(f"Google search returned: {len(json_data['items'])} results")
-                print(f"Google search returned 🔗: {len(json_data['items'])} results")
+                if verbose: print(f"Google search returned 🔗: {len(json_data['items'])} results")
 
                 for item in json_data["items"]:
                     search_result = SearchResult(
@@ -377,6 +377,7 @@ async def main():
     parser.add_argument("--engine", type=str, choices=['bing', 'google'], default='bing', help="Search engine to use (bing or google)")
     parser.add_argument("-l", "--log-level", type=str, default="ERROR", help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
     parser.add_argument("-t", "--max-tokens", type=int, default=DEFAULT_MAX_TOKENS, help="Maximum token limit for model input")
+    parser.add_argument("--quiet", action='store_true', help="Suppress print messages")
     args = parser.parse_args()
 
     logger.setLevel(args.log_level.upper())
@@ -389,35 +390,37 @@ async def main():
     search_count = args.search
     max_tokens = args.max_tokens
     search_engine = args.engine
+    verbose = not args.quiet
 
     logger.info(f"Searching for: {query} using {search_engine}")
-    print(f"Searching for 🔎: {query} using {search_engine}")
+    if verbose: print(f"Searching for 🔎: {query} using {search_engine}")
     request = Request(query)
     llm_agent = LLMAgent()
 
     # Fetch search results
     logger.info("Fetching search results...")
     if search_engine == 'bing':
-        await fetch_web_pages_bing(request, search_count)
+        await fetch_web_pages_bing(request, search_count, verbose)
     else:
-        await fetch_web_pages_google(request, search_count)
+        await fetch_web_pages_google(request, search_count, verbose)
 
     # Extract unique base names from URLs
-    unique_basenames = set(urlparse(search_result.url).netloc for search_result in request.search_map.values())
+    if verbose:
+        unique_basenames = set(urlparse(search_result.url).netloc for search_result in request.search_map.values())
 
-    print("From domains 🌐: ", end="")
-    for basename in unique_basenames:
-        print(basename, " ", end="")
-    print("")
+        print("From domains 🌐: ", end="")
+        for basename in unique_basenames:
+            print(basename, " ", end="")
+        print("")
 
     # Scrape content
     logger.info("Scraping content from search results...")
-    print(f"Scraping content from search results...")
+    if verbose: print(f"Scraping content from search results...")
     await process_urls(request)
 
     # Generate and upsert embeddings
     logger.info("Embedding content 📥")
-    print(f"Embedding content ✨")
+    if verbose: print(f"Embedding content ✨")
     dimension = len(llm_agent.embeddings.embed_query(query))
     vector_client = QdrantClient(host="localhost", port=6333)
 
@@ -432,8 +435,9 @@ async def main():
 
     total_chunks = await generate_upsert_embeddings(request, vector_client)
 
-    print(f"Total embeddings 📊: {len(request.search_map)}")
-    print(f"Total chunks processed 🧩: {total_chunks}")
+    if verbose:
+        print(f"Total embeddings 📊: {len(request.search_map)}")
+        print(f"Total chunks processed 🧩: {total_chunks}")
     
     # Search across embeddings
     prompt_embedding = llm_agent.embeddings.embed_query(query)
