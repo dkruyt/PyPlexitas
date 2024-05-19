@@ -36,6 +36,8 @@ CHUNK_SIZE = 1000
 DIMENSION = 1536
 # Default maximum number of tokens for input/output in API requests
 DEFAULT_MAX_TOKENS = 1024  
+# Defined user-agent globally, to be used in all API requests
+USER_AGENT = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/W.X.Y.Z Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -123,6 +125,7 @@ async def fetch_web_pages(request: Request, search_count: int):
 
     headers = {
         "Ocp-Apim-Subscription-Key": bing_api_key,
+        "User-Agent": USER_AGENT,  # Using the global variable
     }
 
     async with aiohttp.ClientSession() as session:
@@ -184,7 +187,7 @@ async def fetch_url_content(session: ClientSession, url: str, max_retries: int =
 # Function to handle the URL processing by scraping content from each URL found in the search results.
 async def process_urls(request: Request):
     logger.info("Processing URLs to scrape content...")
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
         tasks = []
         for search_result in request.search_map.values():
             url = search_result.url
