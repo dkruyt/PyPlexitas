@@ -7,6 +7,7 @@ import argparse
 import asyncio
 from aiohttp import ClientSession, ClientError, ClientSSLError
 from typing import List, Dict, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 from lxml import html
@@ -105,7 +106,7 @@ def clean_text(text: str) -> str:
 
 # Function to perform web search using Bing's search API.
 async def fetch_web_pages_bing(request: Request, search_count: int):
-    print("Starting Bing search...")
+    print("Starting Bing search ⏳")
     
     query = request.query
     mkt = "en-US"
@@ -135,7 +136,7 @@ async def fetch_web_pages_bing(request: Request, search_count: int):
             if response.status == 200:
                 json_data = await response.json()
                 logger.info(f"Bing search returned: {len(json_data['webPages']['value'])} results")
-                print(f"Bing search returned: {len(json_data['webPages']['value'])} results")
+                print(f"Bing search returned 🔗: {len(json_data['webPages']['value'])} results")
 
                 for wp in json_data["webPages"]["value"]:
                     search_result = SearchResult(
@@ -151,7 +152,7 @@ async def fetch_web_pages_bing(request: Request, search_count: int):
 
 # Function to perform web search using Google's search API.
 async def fetch_web_pages_google(request: Request, search_count: int):
-    print("Starting Google search...")
+    print("Starting Google search ⏳")
     
     query = request.query
 
@@ -174,7 +175,7 @@ async def fetch_web_pages_google(request: Request, search_count: int):
             if response.status == 200:
                 json_data = await response.json()
                 logger.info(f"Google search returned: {len(json_data['items'])} results")
-                print(f"Google search returned: {len(json_data['items'])} results")
+                print(f"Google search returned 🔗: {len(json_data['items'])} results")
 
                 for item in json_data["items"]:
                     search_result = SearchResult(
@@ -258,7 +259,7 @@ async def insert_embedding(vector_client: QdrantClient, embedding: List[float], 
     
 # Function to generate embeddings for web page content and upsert them into the vector database.
 # This function iterates over the search results, chunks the content, and processes each chunk to create and store embeddings.
-async def generate_upsert_embeddings(request: Request, vector_client: QdrantClient):
+async def generate_upsert_embeddings(request: Request, vector_client: QdrantClient) -> int:
     logger.info("Generating and upserting embeddings...")
     tasks = []
     shared_counter = 0
@@ -290,6 +291,7 @@ async def generate_upsert_embeddings(request: Request, vector_client: QdrantClie
             shared_counter += 1
 
     await asyncio.gather(*tasks)
+    return shared_counter
 
 # Function to process a content chunk, generate its embedding, and upsert the embedding into the vector database.
 async def process_chunk(request: Request, vector_client: QdrantClient, shared_counter: int, url_hash: str, chunk: str):
@@ -389,6 +391,7 @@ async def main():
     search_engine = args.engine
 
     logger.info(f"Searching for: {query} using {search_engine}")
+    print(f"Searching for 🔎: {query} using {search_engine}")
     request = Request(query)
     llm_agent = LLMAgent()
 
@@ -399,12 +402,22 @@ async def main():
     else:
         await fetch_web_pages_google(request, search_count)
 
+    # Extract unique base names from URLs
+    unique_basenames = set(urlparse(search_result.url).netloc for search_result in request.search_map.values())
+
+    print("From domains 🌐: ", end="")
+    for basename in unique_basenames:
+        print(basename, " ", end="")
+    print("")
+
     # Scrape content
     logger.info("Scraping content from search results...")
+    print(f"Scraping content from search results...")
     await process_urls(request)
 
     # Generate and upsert embeddings
-    logger.info("Embedding content...")
+    logger.info("Embedding content 📥")
+    print(f"Embedding content ✨")
     dimension = len(llm_agent.embeddings.embed_query(query))
     vector_client = QdrantClient(host="localhost", port=6333)
 
@@ -417,8 +430,11 @@ async def main():
         vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
     )
 
-    await generate_upsert_embeddings(request, vector_client)
+    total_chunks = await generate_upsert_embeddings(request, vector_client)
 
+    print(f"Total embeddings 📊: {len(request.search_map)}")
+    print(f"Total chunks processed 🧩: {total_chunks}")
+    
     # Search across embeddings
     prompt_embedding = llm_agent.embeddings.embed_query(query)
     search_result = vector_client.search(
