@@ -8,6 +8,12 @@ import asyncio
 from aiohttp import ClientSession, ClientError, ClientSSLError
 from typing import List, Dict, Optional
 from urllib.parse import urlparse
+import base64
+import google.auth
+from google.auth.transport.requests import Request as GoogleRequest
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
 import aiohttp
 from lxml import html
@@ -370,11 +376,72 @@ class LLMAgent:
         logger.debug(f"Generated answer: {result['output_text']}")
         print(result["output_text"])
 
+# Function to authenticate and create a Gmail API client
+def authenticate_gmail():
+    creds = None
+    SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+    token_path = 'token.json'
+    creds_path = 'credentials.json'
+
+    # The token.json file stores the user's access and refresh tokens and is created automatically when the authorization flow completes for the first time.
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(GoogleRequest())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open(token_path, 'w') as token:
+            token.write(creds.to_json())
+
+    return build('gmail', 'v1', credentials=creds)
+
+# Function to search for emails in Gmail
+async def fetch_emails_gmail(query: str, max_results: int) -> List[Dict[str, str]]:
+    service = authenticate_gmail()
+    results = service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
+    messages = results.get('messages', [])
+
+    emails = []
+    for message in messages:
+        msg = service.users().messages().get(userId='me', id=message['id']).execute()
+        payload = msg.get('payload', {})
+        headers = payload.get('headers', [])
+        subject = next((header['value'] for header in headers if header['name'] == 'Subject'), 'No Subject')
+        snippet = msg.get('snippet', '')
+        email_data = {
+            'id': message['id'],
+            'subject': subject,
+            'snippet': snippet
+        }
+        emails.append(email_data)
+
+    return emails
+
+# Function to download the full content of an email
+async def fetch_email_content_gmail(email_id: str) -> str:
+    service = authenticate_gmail()
+    msg = service.users().messages().get(userId='me', id=email_id, format='full').execute()
+    payload = msg.get('payload', {})
+    parts = payload.get('parts', [])
+    body = ""
+
+    for part in parts:
+        if part['mimeType'] == 'text/plain':
+            body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
+
+    return body
+
+# Integrate Gmail search into main function
 async def main():
     parser = argparse.ArgumentParser(description="PyPlexitas - Open source CLI alternative to Perplexity AI by Dennis Kruyt")
     parser.add_argument("-q", "--query", type=str, required=True, help="Search Query")
     parser.add_argument("-s", "--search", type=int, default=10, help="Number of search results to parse")
-    parser.add_argument("--engine", type=str, choices=['bing', 'google'], default='bing', help="Search engine to use (bing or google)")
+    parser.add_argument("--engine", type=str, choices=['bing', 'google', 'gmail'], default='bing', help="Search engine to use (bing, google, gmail)")
     parser.add_argument("-l", "--log-level", type=str, default="ERROR", help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
     parser.add_argument("-t", "--max-tokens", type=int, default=DEFAULT_MAX_TOKENS, help="Maximum token limit for model input")
     parser.add_argument("--quiet", action='store_true', help="Suppress print messages")
@@ -397,26 +464,37 @@ async def main():
     request = Request(query)
     llm_agent = LLMAgent()
 
-    # Fetch search results
-    logger.info("Fetching search results...")
-    if search_engine == 'bing':
-        await fetch_web_pages_bing(request, search_count, verbose)
+    if search_engine == 'gmail':
+        emails = await fetch_emails_gmail(query, search_count)
+        for email in emails:
+            email_id = email['id']
+            subject = email['subject']
+            snippet = email['snippet']
+            content = await fetch_email_content_gmail(email_id)
+            search_result = SearchResult(name=subject, url=f"gmail://{email_id}", content=content)
+            request.add_search_result(search_result)
     else:
-        await fetch_web_pages_google(request, search_count, verbose)
+        # Fetch search results
+        logger.info("Fetching search results...")
+        if search_engine == 'bing':
+            await fetch_web_pages_bing(request, search_count, verbose)
+        else:
+            await fetch_web_pages_google(request, search_count, verbose)
 
-    # Extract unique base names from URLs
-    if verbose:
-        unique_basenames = set(urlparse(search_result.url).netloc for search_result in request.search_map.values())
+    if search_engine != 'gmail':
+        # Extract unique base names from URLs
+        if verbose:
+            unique_basenames = set(urlparse(search_result.url).netloc for search_result in request.search_map.values())
 
-        print("From domains 🌐: ", end="")
-        for basename in unique_basenames:
-            print(basename, " ", end="")
-        print("")
+            print("From domains 🌐: ", end="")
+            for basename in unique_basenames:
+                print(basename, " ", end="")
+            print("")
 
-    # Scrape content
-    logger.info("Scraping content from search results...")
-    if verbose: print(f"Scraping content from search results...")
-    await process_urls(request)
+        # Scrape content
+        logger.info("Scraping content from search results...")
+        if verbose: print(f"Scraping content from search results...")
+        await process_urls(request)
 
     # Generate and upsert embeddings
     logger.info("Embedding content 📥")
