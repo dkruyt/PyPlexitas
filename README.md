@@ -1,6 +1,10 @@
 # 🌟 PyPlexitas
 
-PyPlexitas is an open-source Python CLI alternative to Perplexity AI, designed to perform web searches, scrape content, generate embeddings, and answer questions using state-of-the-art language models.
+PyPlexitas is a Python script that is designed to create an open-source alternative to Perplexity AI, a tool that provides users with detailed answers to their queries by searching the web, extracting relevant content, and using advanced language models to generate responses.
+
+The script operates by first taking a user’s query and using search engines like Bing or Google and GMAIL to find relevant web pages or e-mails. It then scrapes the content from these web pages or mails, processes the text into manageable chunks, and generates vector embeddings for these chunks. Vector embeddings are mathematical representations of text that allow for efficient searching and comparison of content. These embeddings are stored in a database, enabling quick retrieval of relevant information based on the user’s query.
+
+Once the content is processed and stored, the script uses a language model to generate a detailed answer to the user’s query, using the information extracted from the web pages. This response is designed to be accurate and informative, drawing directly from the content found during the search process.
 
 **Example:**
 ```bash
@@ -38,7 +42,7 @@ The release date for GPT-5 is currently expected to be sometime in mid-2024, lik
 - [License](#license)
 
 ## Features
-- **Web Search**: Perform web searches using Bing or Google APIs.
+- **Web Search**: Perform web searches using Bing, Google, or Gmail APIs.
 - **Content Scraping**: Scrape content from search results.
 - **Embedding Generation**: Generate embeddings for content using OpenAI or Ollama models.
 - **Question Answering**: Answer questions based on the scraped content.
@@ -95,6 +99,13 @@ Fill in your API keys and other necessary details in the `.env` file:
 3. Go to the Keys and Endpoint section to find your API key.
 4. Copy the API key and add it to the `BING_SUBSCRIPTION_KEY` field in your `.env` file.
 
+### Gmail API Key
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/).
+2. Create a new project or select an existing project.
+3. Enable the Gmail API in the API & Services library.
+4. Go to the [Credentials](https://console.cloud.google.com/apis/credentials) page and create OAuth 2.0 credentials.
+5. Download the credentials file and save it as `credentials.json` in the project root.
+
 ## Usage
 Run the PyPlexitas script with your query:
 ```bash
@@ -103,7 +114,7 @@ python PyPlexitas.py -q "Your search query" -s 10 --engine bing
 Options:
 - `-q, --query`: Search query (required)
 - `-s, --search`: Number of search results to parse (default: 10)
-- `--engine`: Search engine to use (`bing` or `google`, default: `bing`)
+- `--engine`: Search engine to use (`bing`, `google`, or `gmail`, default: `bing`)
 - `-l, --log-level`: Set the logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`, default: `ERROR`)
 - `-t, --max-tokens`: Maximum token limit for model input (default: 1024)
 - `--quiet`: Suppress print messages
@@ -120,5 +131,3 @@ Contributions are welcome! Please fork the repository and submit a pull request 
 
 ## License
 This project is licensed under the GPL 3.0 License. See the [LICENSE](LICENSE) file for details.
-
-
