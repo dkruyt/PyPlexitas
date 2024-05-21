@@ -113,10 +113,11 @@ python PyPlexitas.py -q "Your search query" -s 10 --engine bing
 ```
 Options:
 - `-q, --query`: Search query (required)
+- `--llm-query`: Optional LLM query for answering (defaults to the search query)
 - `-s, --search`: Number of search results to parse (default: 10)
 - `--engine`: Search engine to use (`bing`, `google`, or `gmail`, default: `bing`)
 - `-l, --log-level`: Set the logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`, default: `ERROR`)
-- `-t, --max-tokens`: Maximum token limit for model input (default: 1024)
+- `-t, --max-tokens`: Maximum token limit for model input (default: 16000)
 - `--quiet`: Suppress print messages
 
 ## Project Structure
