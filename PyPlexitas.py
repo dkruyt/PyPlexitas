@@ -40,11 +40,11 @@ DEFAULT_GOOGLE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
 # Default base URL for OpenAI API
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # Default chunk size for processing text data
-CHUNK_SIZE = 1000
+CHUNK_SIZE = 600
 # Dimension of the embedding vectors
 DIMENSION = 1536
 # Default maximum number of tokens for input/output in API requests
-DEFAULT_MAX_TOKENS = 1024  
+DEFAULT_MAX_TOKENS = 16000  
 # Defined user-agent globally, to be used in all API requests can be helpfull in bypassing logins and pywalls
 USER_AGENT = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/W.X.Y.Z Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 
@@ -328,9 +328,11 @@ class LLMAgent:
 
         self.local_mode = use_ollama
         if self.local_mode:
+            print(f"Using Ollama model 🧠 for embeddings: {embedding_model_name} and chat: {ollama_chat_model_name}")
             self.embeddings = OllamaEmbeddings(model='llama3')
             self.llm = Ollama(model=ollama_chat_model_name)
         else:
+            print(f"Using OpenAI model 🧠 for embeddings and chat: {chat_model_name}")
             self.embeddings = OpenAIEmbeddings(openai_api_key=api_key)
             self.llm = ChatOpenAI(openai_api_key=api_key, model_name=chat_model_name)
         
@@ -532,3 +534,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
