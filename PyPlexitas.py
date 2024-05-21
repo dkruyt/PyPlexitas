@@ -352,8 +352,8 @@ class LLMAgent:
         logger.debug(f"Converted {len(chunks)} chunks into {len(documents)} documents")
         return documents
 
-    async def answer_question_stream(self, query: str, chunks: List[Chunk], max_tokens: int):
-        print(f"\nAnswering your query: {query} 🙋\n")
+    async def answer_question_stream(self, llm_query: str, chunks: List[Chunk], max_tokens: int):
+        print(f"\nAnswering your query: {llm_query} 🙋\n")
         documents = self.chunk_to_documents(chunks, max_tokens)
         logger.debug(f"Documents metadata:\n{[doc.metadata for doc in documents]}")
         prompt = PromptTemplate(
@@ -374,7 +374,7 @@ class LLMAgent:
             """,
         )
         chain = load_qa_chain(self.llm, chain_type="stuff", prompt=prompt)
-        result = chain.invoke({"input_documents": documents, "question": query}, return_only_outputs=True)
+        result = chain.invoke({"input_documents": documents, "question": llm_query}, return_only_outputs=True)
         logger.debug(f"Generated answer: {result['output_text']}")
         print(result["output_text"])
 
@@ -442,6 +442,7 @@ async def fetch_email_content_gmail(email_id: str) -> str:
 async def main():
     parser = argparse.ArgumentParser(description="PyPlexitas - Open source CLI alternative to Perplexity AI by Dennis Kruyt")
     parser.add_argument("-q", "--query", type=str, required=True, help="Search Query")
+    parser.add_argument("--llm-query", type=str, help="Optional LLM Query")
     parser.add_argument("-s", "--search", type=int, default=10, help="Number of search results to parse")
     parser.add_argument("--engine", type=str, choices=['bing', 'google', 'gmail'], default='bing', help="Search engine to use (bing, google, gmail)")
     parser.add_argument("-l", "--log-level", type=str, default="ERROR", help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
@@ -456,6 +457,7 @@ async def main():
     logger.debug(f"Received arguments: {args}")
 
     query = args.query
+    llm_query = args.llm_query or query
     search_count = args.search
     max_tokens = args.max_tokens
     search_engine = args.engine
@@ -520,7 +522,7 @@ async def main():
         print(f"Total chunks processed 🧩: {total_chunks}")
     
     # Search across embeddings
-    prompt_embedding = llm_agent.embeddings.embed_query(query)
+    prompt_embedding = llm_agent.embeddings.embed_query(llm_query)
     search_result = vector_client.search(
         collection_name="embeddings",
         query_vector=prompt_embedding,
@@ -530,7 +532,7 @@ async def main():
     chunks = request.get_chunks(chunk_ids)
 
     # Answer the question
-    await llm_agent.answer_question_stream(query, chunks, max_tokens)
+    await llm_agent.answer_question_stream(llm_query, chunks, max_tokens)
 
 if __name__ == "__main__":
     asyncio.run(main())
