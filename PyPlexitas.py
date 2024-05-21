@@ -503,7 +503,7 @@ async def main():
     # Generate and upsert embeddings
     logger.info("Embedding content 📥")
     if verbose: print(f"Embedding content ✨")
-    dimension = len(llm_agent.embeddings.embed_query(query))
+    dimension = len(llm_agent.embeddings.embed_query(llm_query))
     vector_client = QdrantClient(host="localhost", port=6333)
 
     collection_name = "embeddings"
