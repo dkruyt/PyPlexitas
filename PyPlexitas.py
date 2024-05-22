@@ -40,7 +40,7 @@ DEFAULT_GOOGLE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
 # Default base URL for OpenAI API
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # Default chunk size for processing text data
-CHUNK_SIZE = 600
+CHUNK_SIZE = 800
 # Dimension of the embedding vectors
 DIMENSION = 1536
 # Default maximum number of tokens for input/output in API requests
@@ -434,8 +434,22 @@ async def fetch_email_content_gmail(email_id: str) -> str:
 
     for part in parts:
         if part['mimeType'] == 'text/plain':
-            body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
+            body = extract_body_from_part(part)
+            break
 
+    return body
+
+# Function to remove HTTP links from email content
+def strip_http_links(content: str) -> str:
+    return re.sub(r'http[s]?://\S+', '', content)
+
+def extract_body_from_part(part):
+    body = ""
+    if 'body' in part and 'data' in part['body']:
+        body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
+    elif 'parts' in part:
+        for sub_part in part['parts']:
+            body += extract_body_from_part(sub_part)
     return body
 
 # Integrate Gmail search into main function
@@ -475,7 +489,9 @@ async def main():
             subject = email['subject']
             snippet = email['snippet']
             content = await fetch_email_content_gmail(email_id)
-            search_result = SearchResult(name=subject, url=f"gmail://{email_id}", content=content)
+            stripped_content = strip_http_links(content)
+
+            search_result = SearchResult(name=subject, url=f"gmail://{email_id}", content=stripped_content)
             request.add_search_result(search_result)
     else:
         # Fetch search results
