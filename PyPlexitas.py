@@ -16,7 +16,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 import aiohttp
-from lxml import html
+from bs4 import BeautifulSoup
 from langchain_community.llms import Ollama
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -33,25 +33,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Constants
-# Default endpoint for Bing Search API
 DEFAULT_BING_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
-# Default endpoint for Google Custom Search API
 DEFAULT_GOOGLE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
-# Default base URL for OpenAI API
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-# Default chunk size for processing text data
-CHUNK_SIZE = 800
-# Dimension of the embedding vectors
+CHUNK_SIZE = 500
 DIMENSION = 1536
-# Default maximum number of tokens for input/output in API requests
-DEFAULT_MAX_TOKENS = 16000  
-# Defined user-agent globally, to be used in all API requests can be helpfull in bypassing logins and pywalls
+DEFAULT_MAX_TOKENS = 8096  
 USER_AGENT = "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/W.X.Y.Z Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
-# Request class
 class Request:
     def __init__(self, query: str):
         self.query = query
@@ -88,29 +80,24 @@ class Request:
                 chunks.append(chunk)
         return chunks
 
-# SearchResult class
 class SearchResult:
     def __init__(self, name: str, url: str, content: Optional[str] = None):
         self.name = name
         self.url = url
         self.content = content
 
-# Chunk class
 class Chunk:
     def __init__(self, content: str, name: str, url: str):
         self.content = content
         self.name = name
         self.url = url
 
-# Function to hash strings, typically used for URL hashing or similar purposes.
 def hash_string(input_string: str) -> str:
     return hashlib.sha256(input_string.encode()).hexdigest()
 
-# Function to clean text by removing extra whitespace and normalizing spaces.
 def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
-# Function to perform web search using Bing's search API.
 async def fetch_web_pages_bing(request: Request, search_count: int, verbose: bool):
     if verbose: print("Starting Bing search ⏳")
     
@@ -134,7 +121,7 @@ async def fetch_web_pages_bing(request: Request, search_count: int, verbose: boo
 
     headers = {
         "Ocp-Apim-Subscription-Key": bing_api_key,
-        "User-Agent": USER_AGENT,  # Using the global variable
+        "User-Agent": USER_AGENT,
     }
 
     async with aiohttp.ClientSession() as session:
@@ -156,7 +143,6 @@ async def fetch_web_pages_bing(request: Request, search_count: int, verbose: boo
                 logger.error(f"Request failed with status code: {response.status}")
                 raise Exception(f"Request failed with status code: {response.status}")
 
-# Function to perform web search using Google's search API.
 async def fetch_web_pages_google(request: Request, search_count: int, verbose: bool):
     if verbose: print("Starting Google search ⏳")
     
@@ -195,7 +181,6 @@ async def fetch_web_pages_google(request: Request, search_count: int, verbose: b
                 logger.error(f"Request failed with status code: {response.status}")
                 raise Exception(f"Request failed with status code: {response.status}")
 
-# Function to scrape content from given URLs by making HTTP requests.
 async def fetch_url_content(session: ClientSession, url: str, max_retries: int = 3, retry_delay: int = 1, timeout: int = 5) -> str:
     logger.info(f"Scraping content from URL: {url}")
     retries = 0
@@ -204,20 +189,21 @@ async def fetch_url_content(session: ClientSession, url: str, max_retries: int =
             async with session.get(url, timeout=timeout) as response:
                 if response.status == 200:
                     full_text = await response.text()
-                    document = html.fromstring(full_text)
+                    soup = BeautifulSoup(full_text, 'html.parser')
 
-                    selectors = [
-                        "article",  # good for blog posts/articles
-                        "div.main-content",  # a more specific div that usually holds main content
-                        "body",  # generic selector
-                    ]
+                    # kill all script and style elements
+                    for script in soup(["script", "style"]):
+                        script.extract()    # rip it out
 
-                    main_text = ""
-                    for selector in selectors:
-                        elements = document.cssselect(selector)
-                        if elements:
-                            main_text = "\n".join([clean_text(element.text_content()) for element in elements if element.text_content()])
-                            break
+                    # get text
+                    text = soup.get_text()
+
+                    # break into lines and remove leading and trailing space on each
+                    lines = (line.strip() for line in text.splitlines())
+                    # break multi-headlines into a line each
+                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                    # drop blank lines
+                    main_text = '\n'.join(chunk for chunk in chunks if chunk)
 
                     logger.debug(f"Extracted content: '{main_text}' from URL: {url}")
                     if not main_text.strip():
@@ -233,7 +219,6 @@ async def fetch_url_content(session: ClientSession, url: str, max_retries: int =
     logger.error(f"Failed to scrape content from URL: {url} after {max_retries} retries.")
     return ""
 
-# Function to handle the URL processing by scraping content from each URL found in the search results.
 async def process_urls(request: Request):
     logger.info("Processing URLs to scrape content...")
     async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
@@ -250,7 +235,6 @@ async def process_urls(request: Request):
             logger.debug(f"Adding webpage content for URL hash {url_hash}. Content length: {len(content)}")
             request.add_webpage_content(url_hash, content)
 
-# Embedding generation and upsert
 async def insert_embedding(vector_client: QdrantClient, embedding: List[float], chunk_id: int):
     logger.debug(f"Inserting embedding for chunk ID {chunk_id}")
     vector_client.upsert(
@@ -263,8 +247,6 @@ async def insert_embedding(vector_client: QdrantClient, embedding: List[float], 
         ],
     )
     
-# Function to generate embeddings for web page content and upsert them into the vector database.
-# This function iterates over the search results, chunks the content, and processes each chunk to create and store embeddings.
 async def generate_upsert_embeddings(request: Request, vector_client: QdrantClient) -> int:
     logger.info("Generating and upserting embeddings...")
     tasks = []
@@ -278,7 +260,6 @@ async def generate_upsert_embeddings(request: Request, vector_client: QdrantClie
             logger.warning(f"Skipping URL {search_result.url} due to empty or non-relevant content")
             continue
 
-        # Split content into chunks
         chunks = []
         words = content.split()
         for i in range(0, len(words), CHUNK_SIZE):
@@ -299,7 +280,6 @@ async def generate_upsert_embeddings(request: Request, vector_client: QdrantClie
     await asyncio.gather(*tasks)
     return shared_counter
 
-# Function to process a content chunk, generate its embedding, and upsert the embedding into the vector database.
 async def process_chunk(request: Request, vector_client: QdrantClient, shared_counter: int, url_hash: str, chunk: str):
     logger.debug(f"Processing chunk with ID {shared_counter} for URL hash {url_hash}")
     if os.getenv("USE_OLLAMA", "false").lower() == "true":
@@ -315,7 +295,6 @@ async def process_chunk(request: Request, vector_client: QdrantClient, shared_co
 
     await insert_embedding(vector_client, embedding, chunk_id)
 
-# LLM agent
 class LLMAgent:
     def __init__(self):
         base_url = os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL)
@@ -343,7 +322,7 @@ class LLMAgent:
         current_tokens = 0
 
         for chunk in chunks:
-            chunk_tokens = len(chunk.content.split())  # Simple token estimation using word count
+            chunk_tokens = len(chunk.content.split())  
             if current_tokens + chunk_tokens > max_tokens:
                 break
             documents.append(Document(page_content=chunk.content, metadata={"name": chunk.name, "url": chunk.url}))
@@ -378,31 +357,26 @@ class LLMAgent:
         logger.debug(f"Generated answer: {result['output_text']}")
         print(result["output_text"])
 
-# Function to authenticate and create a Gmail API client
 def authenticate_gmail():
     creds = None
     SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
     token_path = 'token.json'
     creds_path = 'credentials.json'
 
-    # The token.json file stores the user's access and refresh tokens and is created automatically when the authorization flow completes for the first time.
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
 
-    # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(GoogleRequest())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
             creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
         with open(token_path, 'w') as token:
             token.write(creds.to_json())
 
     return build('gmail', 'v1', credentials=creds)
 
-# Function to search for emails in Gmail
 async def fetch_emails_gmail(query: str, max_results: int) -> List[Dict[str, str]]:
     service = authenticate_gmail()
     results = service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
@@ -424,7 +398,6 @@ async def fetch_emails_gmail(query: str, max_results: int) -> List[Dict[str, str
 
     return emails
 
-# Function to download the full content of an email
 async def fetch_email_content_gmail(email_id: str) -> str:
     service = authenticate_gmail()
     msg = service.users().messages().get(userId='me', id=email_id, format='full').execute()
@@ -439,7 +412,6 @@ async def fetch_email_content_gmail(email_id: str) -> str:
 
     return body
 
-# Function to remove HTTP links from email content
 def strip_http_links(content: str) -> str:
     return re.sub(r'http[s]?://\S+', '', content)
 
@@ -452,7 +424,6 @@ def extract_body_from_part(part):
             body += extract_body_from_part(sub_part)
     return body
 
-# Integrate Gmail search into main function
 async def main():
     parser = argparse.ArgumentParser(description="PyPlexitas - Open source CLI alternative to Perplexity AI by Dennis Kruyt")
     parser.add_argument("-q", "--query", type=str, required=True, help="Search Query")
@@ -494,7 +465,6 @@ async def main():
             search_result = SearchResult(name=subject, url=f"gmail://{email_id}", content=stripped_content)
             request.add_search_result(search_result)
     else:
-        # Fetch search results
         logger.info("Fetching search results...")
         if search_engine == 'bing':
             await fetch_web_pages_bing(request, search_count, verbose)
@@ -502,7 +472,6 @@ async def main():
             await fetch_web_pages_google(request, search_count, verbose)
 
     if search_engine != 'gmail':
-        # Extract unique base names from URLs
         if verbose:
             unique_basenames = set(urlparse(search_result.url).netloc for search_result in request.search_map.values())
 
@@ -511,12 +480,10 @@ async def main():
                 print(basename, " ", end="")
             print("")
 
-        # Scrape content
         logger.info("Scraping content from search results...")
         if verbose: print(f"Scraping content from search results...")
         await process_urls(request)
 
-    # Generate and upsert embeddings
     logger.info("Embedding content 📥")
     if verbose: print(f"Embedding content ✨")
     dimension = len(llm_agent.embeddings.embed_query(llm_query))
@@ -537,7 +504,6 @@ async def main():
         print(f"Total embeddings 📊: {len(request.search_map)}")
         print(f"Total chunks processed 🧩: {total_chunks}")
     
-    # Search across embeddings
     prompt_embedding = llm_agent.embeddings.embed_query(llm_query)
     search_result = vector_client.search(
         collection_name="embeddings",
@@ -547,9 +513,7 @@ async def main():
     chunk_ids = [result.id for result in search_result]
     chunks = request.get_chunks(chunk_ids)
 
-    # Answer the question
     await llm_agent.answer_question_stream(llm_query, chunks, max_tokens)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
